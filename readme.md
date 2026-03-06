@@ -22,7 +22,7 @@ A simple, modern USB formatting tool for **Windows** and **Linux**, built with P
 
 ## Screenshot
 
-> *(screenshot placeholder — run the app and grab one!)*
+![NayDrive Screenshot](naydrive/assets/screenshot.png)
 
 ---
 
