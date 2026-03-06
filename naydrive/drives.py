@@ -1,8 +1,10 @@
 """
 drives.py — USB drive detection for NayDrive.
 Uses psutil to enumerate partitions and filters for removable drives only.
+On Linux, also uses lsblk to detect unmounted removable drives.
 """
 
+import json
 import os
 import subprocess
 from dataclasses import dataclass
@@ -94,7 +96,94 @@ def _get_volume_label_windows(mountpoint: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _detect_linux() -> list[DriveInfo]:
-    """Detect removable drives on Linux by inspecting /sys/block."""
+    """Detect removable drives on Linux using lsblk (catches mounted AND unmounted).
+
+    Falls back to the psutil-based approach if lsblk is unavailable.
+    """
+    drives = _detect_linux_lsblk()
+    if drives is not None:
+        return drives
+    return _detect_linux_psutil()
+
+
+def _detect_linux_lsblk() -> list[DriveInfo] | None:
+    """Use ``lsblk -J`` to find all removable partitions (mounted or not).
+
+    Returns *None* if lsblk is not available so the caller can fall back.
+    """
+    try:
+        result = subprocess.run(
+            ["lsblk", "-J", "-b", "-o",
+             "NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT,RM,TYPE,TRAN"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+    except (FileNotFoundError, json.JSONDecodeError, subprocess.TimeoutExpired):
+        return None
+
+    drives: list[DriveInfo] = []
+    seen_devices: set[str] = set()
+
+    for dev in data.get("blockdevices", []):
+        # Top-level device: check if it is removable or connected via usb
+        removable = dev.get("rm") in (True, "1", 1)
+        transport = (dev.get("tran") or "").lower()
+        is_usb = removable or transport == "usb"
+        if not is_usb:
+            continue
+
+        # Iterate over partitions (children) of this device
+        children = dev.get("children", [])
+        # If the device itself is a partition (no children), treat it as one
+        if not children:
+            children = [dev]
+
+        for part in children:
+            if part.get("type") not in ("part", "disk"):
+                continue
+
+            name = part.get("name", "")
+            device_path = f"/dev/{name}"
+            if device_path in seen_devices:
+                continue
+            seen_devices.add(device_path)
+
+            mountpoint = part.get("mountpoint") or ""
+            # Safety: never show system mounts
+            if mountpoint in ("/", "/boot", "/boot/efi", "/home", "/var", "/tmp"):
+                continue
+            if mountpoint.startswith("/snap"):
+                continue
+
+            raw_size = part.get("size")
+            total_size = int(raw_size) if raw_size else 0
+            # If mounted, prefer psutil for accurate used/free info
+            if mountpoint:
+                try:
+                    usage = psutil.disk_usage(mountpoint)
+                    total_size = usage.total
+                except Exception:
+                    pass
+
+            label = part.get("label") or ""
+            filesystem = part.get("fstype") or "Unknown"
+
+            drives.append(DriveInfo(
+                path=device_path,
+                mountpoint=mountpoint if mountpoint else "(not mounted)",
+                label=label,
+                filesystem=filesystem,
+                total_size=total_size,
+                size_pretty=format_size(total_size),
+            ))
+
+    return drives
+
+
+def _detect_linux_psutil() -> list[DriveInfo]:
+    """Fallback: detect removable drives on Linux using psutil + sysfs."""
     drives: list[DriveInfo] = []
 
     for part in psutil.disk_partitions(all=True):
