@@ -9,7 +9,7 @@ import os
 from typing import Callable, Optional
 
 from naydrive.drives import DriveInfo
-from naydrive.utils import is_windows, is_linux, clamp_label
+from naydrive.utils import is_windows, is_linux, is_admin, clamp_label
 
 
 class FormatError(Exception):
@@ -129,6 +129,35 @@ def _format_windows(
 #  Linux formatting via mkfs.*
 # ---------------------------------------------------------------------------
 
+def _get_system_devices() -> set[str]:
+    """
+    Dynamically determine the system/root block device(s) so we never
+    accidentally format the OS drive.  Returns a set of device paths
+    like {"/dev/nvme0n1", "/dev/nvme0n1p3"}.
+    """
+    devices: set[str] = set()
+    try:
+        result = subprocess.run(
+            ["findmnt", "-n", "-o", "SOURCE", "/"],
+            capture_output=True, text=True, timeout=5,
+        )
+        root_part = result.stdout.strip()  # e.g. /dev/nvme0n1p3
+        if root_part:
+            devices.add(root_part)
+            # Also add the parent disk (strip trailing partition number/pN)
+            base = os.path.basename(root_part)
+            if "nvme" in base:
+                # NVMe: /dev/nvme0n1p3 → /dev/nvme0n1
+                parent = root_part.rsplit("p", 1)[0]
+            else:
+                # SATA/USB: /dev/sda1 → /dev/sda
+                parent = root_part.rstrip("0123456789")
+            devices.add(parent)
+    except Exception:
+        pass
+    return devices
+
+
 def _format_linux(
     drive: DriveInfo,
     fs_type: str,
@@ -139,15 +168,21 @@ def _format_linux(
     """Format a drive on Linux using the appropriate mkfs command."""
     device = drive.path  # e.g. /dev/sdb1
 
-    # Safety: refuse to format anything that looks like a system device
-    if device in ("/dev/sda", "/dev/sda1", "/dev/nvme0n1", "/dev/nvme0n1p1"):
-        raise FormatError(f"Refusing to format suspected system device: {device}")
+    # Safety: refuse to format anything on the system disk
+    system_devs = _get_system_devices()
+    dev_base = device.rstrip("0123456789") if "nvme" not in device else device.rsplit("p", 1)[0]
+    if device in system_devs or dev_base in system_devs:
+        raise FormatError(f"Refusing to format system device: {device}")
+
+    # Determine whether we need privilege escalation
+    use_pkexec = not is_admin()
 
     # Unmount the drive first (formatting a mounted drive will fail)
     status(f"Unmounting {device}...")
     try:
+        umount_cmd = ["pkexec", "umount", device] if use_pkexec else ["umount", device]
         subprocess.run(
-            ["umount", device],
+            umount_cmd,
             capture_output=True, text=True, timeout=30,
         )
     except Exception:
@@ -155,6 +190,8 @@ def _format_linux(
 
     # Build the mkfs command
     cmd = _build_mkfs_command(device, fs_type, label, quick)
+    if use_pkexec:
+        cmd = ["pkexec"] + cmd
     status(f"Formatting {device} as {fs_type}...")
 
     try:
