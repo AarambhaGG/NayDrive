@@ -52,12 +52,16 @@ class NayDriveApp(ctk.CTk):
         self.drives: list[DriveInfo] = []
         self.selected_drive: Optional[DriveInfo] = None
         self._formatting = False
+        self._poll_id: Optional[str] = None  # after() handle for auto-refresh
 
         # --- Build UI ----------------------------------------------------
         self._build_layout()
 
         # --- Initial scan ------------------------------------------------
         self._refresh_drives()
+
+        # --- Start auto-polling ------------------------------------------
+        self._start_auto_poll()
 
     # =====================================================================
     #  Layout construction
@@ -260,6 +264,40 @@ class NayDriveApp(ctk.CTk):
             btn.grid(row=idx, column=0, padx=4, pady=2, sticky="ew")
 
         self._set_status(f"Found {len(self.drives)} drive(s)")
+
+    # =====================================================================
+    #  Auto-polling for hotplug detection
+    # =====================================================================
+
+    _POLL_INTERVAL_MS = 3000  # check every 3 seconds
+
+    def _start_auto_poll(self) -> None:
+        """Schedule periodic drive detection so hotplugged USBs appear automatically."""
+        self._poll_id = self.after(self._POLL_INTERVAL_MS, self._auto_poll)
+
+    def _auto_poll(self) -> None:
+        """Check if the set of connected drives changed; refresh UI if so."""
+        if self._formatting:
+            # Don't interfere while a format is in progress
+            self._poll_id = self.after(self._POLL_INTERVAL_MS, self._auto_poll)
+            return
+
+        new_drives = detect_drives()
+        # Build a comparable fingerprint: set of (device_path, mountpoint)
+        old_set = {(d.path, d.mountpoint) for d in self.drives}
+        new_set = {(d.path, d.mountpoint) for d in new_drives}
+
+        if old_set != new_set:
+            self._refresh_drives()
+
+        # Re-schedule
+        self._poll_id = self.after(self._POLL_INTERVAL_MS, self._auto_poll)
+
+    def _stop_auto_poll(self) -> None:
+        """Cancel the polling timer (call on window close if needed)."""
+        if self._poll_id is not None:
+            self.after_cancel(self._poll_id)
+            self._poll_id = None
 
     def _select_drive(self, drive: DriveInfo, index: int) -> None:
         """Handle a drive being clicked in the left panel."""
