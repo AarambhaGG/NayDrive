@@ -10,7 +10,7 @@ A simple, modern USB formatting tool for **Windows** and **Linux**, built with P
 
 ## Quick Start - For Everyone
 
-Download the latest release: [NayDrive Releases](https://github.com/yourusername/NayDrive/releases)
+Download the latest release: [NayDrive Releases](https://github.com/AarambhaGG/NayDrive/releases)
 
 Simply download `NayDrive.exe` and run it. No installation required.
 
