@@ -4,8 +4,6 @@ __pycache__/
 *.pyo
 *.egg-info/
 *.egg
-dist/
-build/
 
 # Virtual environment
 .venv/
@@ -13,17 +11,28 @@ venv/
 env/
 
 # PyInstaller
+dist/
+build/
 *.spec
+*.manifest
+*.exe
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
+.directory
+desktop.ini
 
 # Logs
 *.log
+
+# Misc
+*.bak
+*.tmp
