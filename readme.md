@@ -8,6 +8,14 @@ A simple, modern USB formatting tool for **Windows** and **Linux**, built with P
 
 ---
 
+## Quick Start - For Everyone
+
+Download the latest release: [NayDrive Releases](https://github.com/yourusername/NayDrive/releases)
+
+Simply download `NayDrive.exe` and run it. No installation required.
+
+---
+
 ## Features
 
 - **Auto-detect** all connected removable USB drives
@@ -26,33 +34,9 @@ A simple, modern USB formatting tool for **Windows** and **Linux**, built with P
 
 ---
 
-## Requirements
+## Development
 
-- Python 3.10 or newer
-- `customtkinter >= 5.2.0`
-- `psutil >= 5.9.0`
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-## Running
-
-```bash
-# Linux (needs root for formatting)
-sudo python -m naydrive
-
-# Windows (will auto-request admin/UAC)
-python -m naydrive
-```
-
----
-
-## Project Structure
+### Project Structure
 
 ```
 naydrive/
@@ -69,7 +53,43 @@ naydrive/
 
 ---
 
+### Requirements
+
+- Python 3.10 or newer
+- `customtkinter >= 5.2.0`
+- `psutil >= 5.9.0`
+
+### Setup
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Running from Source
+
+```bash
+# Linux (needs root for formatting)
+sudo python -m naydrive
+
+# Windows (will auto-request admin/UAC)
+python -m naydrive
+```
+
+### Building the Executable
+
+```bash
+python -m PyInstaller NayDrive.spec
+```
+
+The built executable will be in `dist/NayDrive.exe`.
+
+---
+
 ## Packaging with PyInstaller
+
+For custom builds:
 
 ```bash
 # Windows
