@@ -35,8 +35,13 @@ class DriveInfo:
 # ---------------------------------------------------------------------------
 
 def _detect_windows() -> list[DriveInfo]:
-    """Detect removable drives on Windows using psutil + win32."""
+    """Detect removable drives on Windows using psutil + win32.
+
+    Groups partitions by physical device and shows only one entry per device.
+    """
     drives: list[DriveInfo] = []
+    seen_devices: dict[str, DriveInfo] = {}  # Map device_id -> DriveInfo
+
     try:
         import ctypes
         # Drive types: 2 = REMOVABLE
@@ -52,6 +57,19 @@ def _detect_windows() -> list[DriveInfo]:
             if part.mountpoint.upper().startswith("C:"):
                 continue
 
+            # Get a unique identifier for this physical device (serial number)
+            device_id = _get_device_id_windows(part.mountpoint)
+
+            # If we've already seen this physical device, update total size
+            if device_id in seen_devices:
+                try:
+                    usage = psutil.disk_usage(part.mountpoint)
+                    seen_devices[device_id].total_size += usage.total
+                    seen_devices[device_id].size_pretty = format_size(seen_devices[device_id].total_size)
+                except Exception:
+                    pass
+                continue
+
             total_size = 0
             try:
                 usage = psutil.disk_usage(part.mountpoint)
@@ -62,18 +80,20 @@ def _detect_windows() -> list[DriveInfo]:
             label = _get_volume_label_windows(part.mountpoint)
             filesystem = part.fstype if part.fstype else "Unknown"
 
-            drives.append(DriveInfo(
+            drive_info = DriveInfo(
                 path=part.device,
                 mountpoint=part.mountpoint,
                 label=label,
                 filesystem=filesystem,
                 total_size=total_size,
                 size_pretty=format_size(total_size),
-            ))
+            )
+            seen_devices[device_id] = drive_info
+
     except Exception:
         pass
 
-    return drives
+    return list(seen_devices.values())
 
 
 def _get_volume_label_windows(mountpoint: str) -> str:
@@ -89,6 +109,23 @@ def _get_volume_label_windows(mountpoint: str) -> str:
         return volume_name_buf.value or ""
     except Exception:
         return ""
+
+
+def _get_device_id_windows(mountpoint: str) -> str:
+    """Get a unique ID for the physical device (using volume serial number)."""
+    try:
+        import ctypes
+        serial_buf = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetVolumeInformationW(
+            mountpoint,
+            None, 0,
+            ctypes.byref(serial_buf),
+            None, None, None, 0,
+        )
+        return f"serial_{serial_buf.value}"
+    except Exception:
+        # Fallback: use the mountpoint (less reliable but better than nothing)
+        return mountpoint
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +144,7 @@ def _detect_linux() -> list[DriveInfo]:
 
 
 def _detect_linux_lsblk() -> list[DriveInfo] | None:
-    """Use ``lsblk -J`` to find all removable partitions (mounted or not).
+    """Use ``lsblk -J`` to find all removable USB devices (not partitions).
 
     Returns *None* if lsblk is not available so the caller can fall back.
     """
@@ -134,50 +171,60 @@ def _detect_linux_lsblk() -> list[DriveInfo] | None:
         if not is_usb:
             continue
 
-        # Iterate over partitions (children) of this device
+        # Only show the parent device, not individual partitions
+        if dev.get("type") != "disk":
+            continue
+
+        name = dev.get("name", "")
+        device_path = f"/dev/{name}"
+        if device_path in seen_devices:
+            continue
+        seen_devices.add(device_path)
+
+        # Use the first child partition's mountpoint if available (or any mounted partition)
+        mountpoint = ""
+        label = ""
+        filesystem = "Unknown"
         children = dev.get("children", [])
-        # If the device itself is a partition (no children), treat it as one
-        if not children:
-            children = [dev]
+        for child in children:
+            if child.get("type") == "part":
+                child_mount = child.get("mountpoint") or ""
+                # Only use safe mount points
+                if child_mount and child_mount not in ("/", "/boot", "/boot/efi", "/home", "/var", "/tmp") and not child_mount.startswith("/snap"):
+                    mountpoint = child_mount
+                    break
+                # If this is the first partition, try to use its info
+                if not label and not mountpoint:
+                    label = child.get("label") or ""
+                    filesystem = child.get("fstype") or "Unknown"
 
-        for part in children:
-            if part.get("type") not in ("part", "disk"):
-                continue
+        # If no mounted partition found, use first partition's info
+        if not label and not mountpoint and children:
+            for child in children:
+                if child.get("type") == "part":
+                    label = child.get("label") or ""
+                    filesystem = child.get("fstype") or "Unknown"
+                    break
 
-            name = part.get("name", "")
-            device_path = f"/dev/{name}"
-            if device_path in seen_devices:
-                continue
-            seen_devices.add(device_path)
+        raw_size = dev.get("size")
+        total_size = int(raw_size) if raw_size else 0
 
-            mountpoint = part.get("mountpoint") or ""
-            # Safety: never show system mounts
-            if mountpoint in ("/", "/boot", "/boot/efi", "/home", "/var", "/tmp"):
-                continue
-            if mountpoint.startswith("/snap"):
-                continue
+        # If any partition is mounted, get accurate size from psutil
+        if mountpoint:
+            try:
+                usage = psutil.disk_usage(mountpoint)
+                total_size = usage.total
+            except Exception:
+                pass
 
-            raw_size = part.get("size")
-            total_size = int(raw_size) if raw_size else 0
-            # If mounted, prefer psutil for accurate used/free info
-            if mountpoint:
-                try:
-                    usage = psutil.disk_usage(mountpoint)
-                    total_size = usage.total
-                except Exception:
-                    pass
-
-            label = part.get("label") or ""
-            filesystem = part.get("fstype") or "Unknown"
-
-            drives.append(DriveInfo(
-                path=device_path,
-                mountpoint=mountpoint if mountpoint else "(not mounted)",
-                label=label,
-                filesystem=filesystem,
-                total_size=total_size,
-                size_pretty=format_size(total_size),
-            ))
+        drives.append(DriveInfo(
+            path=device_path,
+            mountpoint=mountpoint if mountpoint else "(not mounted)",
+            label=label,
+            filesystem=filesystem,
+            total_size=total_size,
+            size_pretty=format_size(total_size),
+        ))
 
     return drives
 

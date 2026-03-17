@@ -166,7 +166,7 @@ def _format_linux(
     status: Callable[[str], None],
 ) -> None:
     """Format a drive on Linux using the appropriate mkfs command."""
-    device = drive.path  # e.g. /dev/sdb1
+    device = drive.path  # e.g. /dev/sda
 
     # Safety: refuse to format anything on the system disk
     system_devs = _get_system_devices()
@@ -177,18 +177,27 @@ def _format_linux(
     # Determine whether we need privilege escalation
     use_pkexec = not is_admin()
 
-    # Unmount the drive first (formatting a mounted drive will fail)
-    status(f"Unmounting {device}...")
+    # Unmount all partitions of this device first
+    status(f"Unmounting all partitions of {device}...")
     try:
-        umount_cmd = ["pkexec", "umount", device] if use_pkexec else ["umount", device]
-        subprocess.run(
-            umount_cmd,
-            capture_output=True, text=True, timeout=30,
-        )
+        # Try to unmount all partitions (e.g., sda1, sda2, etc.)
+        import glob as glob_module
+        partitions = glob_module.glob(f"{device}*")
+        for part in partitions:
+            if part == device:  # Skip the device itself
+                continue
+            try:
+                umount_cmd = ["pkexec", "umount", part] if use_pkexec else ["umount", part]
+                subprocess.run(
+                    umount_cmd,
+                    capture_output=True, text=True, timeout=30,
+                )
+            except Exception:
+                pass  # May already be unmounted, that's fine
     except Exception:
-        pass  # May already be unmounted, that's fine
+        pass
 
-    # Build the mkfs command
+    # Build the mkfs command for the raw device (will wipe all partitions)
     cmd = _build_mkfs_command(device, fs_type, label, quick)
     if use_pkexec:
         cmd = ["pkexec"] + cmd
