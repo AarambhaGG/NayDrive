@@ -6,6 +6,7 @@ Handles both Windows (diskpart) and Linux (mkfs.*) formatting.
 import subprocess
 import tempfile
 import os
+from pathlib import Path
 from typing import Callable, Optional
 
 from naydrive.drives import DriveInfo
@@ -129,33 +130,76 @@ def _format_windows(
 #  Linux formatting via mkfs.*
 # ---------------------------------------------------------------------------
 
-def _get_system_devices() -> set[str]:
-    """
-    Dynamically determine the system/root block device(s) so we never
-    accidentally format the OS drive.  Returns a set of device paths
-    like {"/dev/nvme0n1", "/dev/nvme0n1p3"}.
-    """
-    devices: set[str] = set()
+def _canonical_device_path(device: str) -> str:
+    """Return a canonical path for a block device when possible."""
+    try:
+        return str(Path(device).resolve())
+    except Exception:
+        return device
+
+
+def _resolve_parent_device(device: str) -> str | None:
+    """Resolve the immediate parent block device path for a partition/device mapper."""
+    dev = _canonical_device_path(device)
     try:
         result = subprocess.run(
-            ["findmnt", "-n", "-o", "SOURCE", "/"],
-            capture_output=True, text=True, timeout=5,
+            ["lsblk", "-no", "PKNAME", dev],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
-        root_part = result.stdout.strip()  # e.g. /dev/nvme0n1p3
-        if root_part:
-            devices.add(root_part)
-            # Also add the parent disk (strip trailing partition number/pN)
-            base = os.path.basename(root_part)
-            if "nvme" in base:
-                # NVMe: /dev/nvme0n1p3 → /dev/nvme0n1
-                parent = root_part.rsplit("p", 1)[0]
-            else:
-                # SATA/USB: /dev/sda1 → /dev/sda
-                parent = root_part.rstrip("0123456789")
-            devices.add(parent)
+        parent_name = result.stdout.strip()
+        if not parent_name:
+            return None
+        return _canonical_device_path(f"/dev/{parent_name}")
+    except Exception:
+        return None
+
+
+def _all_backing_devices(device: str) -> set[str]:
+    """Return the given device plus all parent backing devices."""
+    out: set[str] = set()
+    current = _canonical_device_path(device)
+    while current and current not in out:
+        out.add(current)
+        current = _resolve_parent_device(current)
+    return out
+
+
+def _get_protected_devices() -> set[str]:
+    """Collect all devices that back critical mounts and swap."""
+    protected: set[str] = set()
+    critical_mounts = ["/", "/boot", "/boot/efi", "/home"]
+
+    for mount in critical_mounts:
+        try:
+            result = subprocess.run(
+                ["findmnt", "-n", "-o", "SOURCE", mount],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            source = result.stdout.strip()
+            if source.startswith("/dev/"):
+                protected.update(_all_backing_devices(source))
+        except Exception:
+            pass
+
+    try:
+        result = subprocess.run(
+            ["swapon", "--show=NAME", "--noheadings"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            source = line.strip()
+            if source.startswith("/dev/"):
+                protected.update(_all_backing_devices(source))
     except Exception:
         pass
-    return devices
+
+    return protected
 
 
 def _format_linux(
@@ -167,15 +211,20 @@ def _format_linux(
 ) -> None:
     """Format a drive on Linux using the appropriate mkfs command."""
     device = drive.path  # e.g. /dev/sda
+    canonical_device = _canonical_device_path(device)
 
-    # Safety: refuse to format anything on the system disk
-    system_devs = _get_system_devices()
-    dev_base = device.rstrip("0123456789") if "nvme" not in device else device.rsplit("p", 1)[0]
-    if device in system_devs or dev_base in system_devs:
+    # Safety: refuse to format any device linked to critical mounts/swap.
+    protected_devs = _get_protected_devices()
+    target_devs = _all_backing_devices(canonical_device)
+    if target_devs.intersection(protected_devs):
         raise FormatError(f"Refusing to format system device: {device}")
 
-    # Determine whether we need privilege escalation
-    use_pkexec = not is_admin()
+    # Avoid pkexec auto-escalation to prevent confusing auth behavior.
+    if not is_admin():
+        raise FormatError(
+            "Formatting on Linux requires root privileges. "
+            "Please relaunch NayDrive with: sudo python -m naydrive"
+        )
 
     # Unmount all partitions of this device first
     status(f"Unmounting all partitions of {device}...")
@@ -187,7 +236,7 @@ def _format_linux(
             if part == device:  # Skip the device itself
                 continue
             try:
-                umount_cmd = ["pkexec", "umount", part] if use_pkexec else ["umount", part]
+                umount_cmd = ["umount", part]
                 subprocess.run(
                     umount_cmd,
                     capture_output=True, text=True, timeout=30,
@@ -199,8 +248,6 @@ def _format_linux(
 
     # Build the mkfs command for the raw device (will wipe all partitions)
     cmd = _build_mkfs_command(device, fs_type, label, quick)
-    if use_pkexec:
-        cmd = ["pkexec"] + cmd
     status(f"Formatting {device} as {fs_type}...")
 
     try:
