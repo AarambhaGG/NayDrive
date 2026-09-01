@@ -1,6 +1,6 @@
 """
 main.py — Entry point for NayDrive.
-Checks for admin/root privileges and launches the GUI.
+Checks for admin/root privileges and launches the ~GUI.
 """
 
 import sys
