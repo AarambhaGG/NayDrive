@@ -403,6 +403,9 @@ class NayDriveApp(ctk.CTk):
         self, drive: DriveInfo, fs_type: str, label: str
     ) -> None:
         """Called on main thread after a successful format."""
+        if not self.winfo_exists():
+            return
+
         self._set_formatting_state(False)
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
@@ -421,6 +424,9 @@ class NayDriveApp(ctk.CTk):
 
     def _format_failure(self, error_msg: str) -> None:
         """Called on main thread after a failed format."""
+        if not self.winfo_exists():
+            return
+
         self._set_formatting_state(False)
         self.progress_bar.stop()
         self.progress_bar.configure(mode="determinate")
@@ -445,4 +451,6 @@ class NayDriveApp(ctk.CTk):
 
     def _set_status(self, text: str) -> None:
         """Update the bottom status label."""
+        if not self.winfo_exists():
+            return
         self.status_label.configure(text=text)

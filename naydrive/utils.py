@@ -6,6 +6,7 @@ Provides OS detection, size formatting, and privilege checks.
 import os
 import sys
 import platform
+import subprocess
 
 
 def get_os() -> str:
@@ -50,7 +51,7 @@ def request_admin_restart() -> None:
     """
     Attempt to re-launch the application with elevated privileges.
     On Windows: UAC prompt via ShellExecuteW.
-    On Linux: prints a message (we can't auto-sudo a GUI app reliably).
+    On Linux: use pkexec to ask via the system policy dialog.
     """
     if is_windows():
         try:
@@ -61,7 +62,24 @@ def request_admin_restart() -> None:
             sys.exit(0)
         except Exception:
             pass  # User cancelled UAC or it failed
-    # On Linux we simply inform the user via the UI
+
+    if is_linux():
+        try:
+            env = os.environ.copy()
+            display = env.get("DISPLAY")
+            xauth = env.get("XAUTHORITY")
+            cmd = ["pkexec", "env"]
+            if display:
+                cmd.extend(["DISPLAY=" + display])
+            if xauth:
+                cmd.extend(["XAUTHORITY=" + xauth])
+            cmd.extend([sys.executable, "-m", "naydrive"])
+            subprocess.run(cmd, check=False)
+            sys.exit(0)
+        except Exception:
+            pass
+
+    # Fallback: inform the user via the CLI/GUI
 
 
 def clamp_label(label: str, fs_type: str) -> str:
